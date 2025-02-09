@@ -539,12 +539,14 @@ static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, con
 }
 
 // Add to the client interface
-static bool ggml_backend_rpc_load_tensor( struct ggml_tensor * tensor, const char * filename, uint64_t file_offset, uint64_t tensor_size) {
+static bool ggml_backend_rpc_load_tensor( struct ggml_tensor * tensor, const char * filename, uint64_t file_offset, uint64_t tensor_size, const char * model_hash) {
     rpc_msg_load_tensor_req req = {0};
     tensor_to_rpc(*tensor, req.tensor);
     strncpy(req.filename, filename, sizeof(req.filename) - 1);
+    strncpy(req.model_hash, model_hash, sizeof(req.model_hash) - 1);
     req.file_offset = file_offset;
     req.tensor_size = tensor_size;
+
 
     if (!send_message(get_connection_fd(), &req, sizeof(req))) {
         return false;
@@ -563,6 +565,19 @@ static bool handle_load_tensor(int fd, const rpc_msg_load_tensor_req & req) {
     rpc_msg_load_tensor_rsp rsp = {0};
 
     try {
+        auto it = g_model_map.find(req.model_hash);
+        if( it == g_model_map.end()){
+            GGML_PRINT_ERROR("Model hash not found: %s\n", req.model_hash);
+            return false;
+        }
+
+        // Verify that the requested model path matches our registered path
+        if (it->second.path != model_path) {
+            fprintf(stderr, "Model path mismatch. Expected: %s, Got: %s\n", 
+                    it->second.path.c_str(), model_path.c_str());
+            return false;
+        }
+
         // Open the model file
         FILE * fin = std::fopen(req.filename, "rb");
         if (!fin) {

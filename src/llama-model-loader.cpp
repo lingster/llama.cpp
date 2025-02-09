@@ -1051,10 +1051,16 @@ bool llama_model_loader::load_all_data(
                 } else {
                     // AITODO: if --rpc-remote-load is enabled, then send RPC_CMD_LOAD_TENSOR request with the required params
                     if (lctx.params.rpc_remote_load) {
+                        const auto & file = files.at(weight->idx);
+                        const std::string & model_path = file->get_path();
+
+                        // Calculate hash for the current model
+                        std::string model_hash = calculate_model_hash(model_path);
+
                         LLAMA_LOG_DEBUG("requesting remote to load from local file: %s\n", model_path.c_str());
                         const auto & file = files.at(weight->idx);
                         const std::string & model_path = file->get_path();
-                        ggml_backend_rpc_load_tensor(cur, model_path.c_str(), weight->offs, n_size);
+                        ggml_backend_rpc_load_tensor(cur, model_path.c_str(), weight->offs, n_size, model_has.c_str());
                     } else {
                         read_buf.resize(n_size);
                         file->seek(weight->offs, SEEK_SET);

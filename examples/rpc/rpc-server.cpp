@@ -24,12 +24,60 @@
 #endif
 #include <string>
 #include <stdio.h>
+#include <unordered_map>
+#include <fstream>
+#include <vector>
+#include "ggml-hash.h" // Add this new header for hash functions
 
 struct rpc_server_params {
     std::string host        = "127.0.0.1";
     int         port        = 50052;
     size_t      backend_mem = 0;
+    std::vector<std::string> model_paths;
 };
+
+// Structure to hold model information
+struct model_info {
+    std::string path;
+    std::string hash;
+};
+
+// Global map to store model paths and their hashes
+static std::unordered_map<std::string, model_info> g_model_map;
+
+// Function to calculate hash of a GGUF file
+static std::string calculate_model_hash(const std::string& model_path) {
+    std::ifstream file(model_path, std::ios::binary);
+    if (!file) {
+        fprintf(stderr, "Failed to open model file: %s\n", model_path.c_str());
+        return "";
+    }
+
+    // Read the first 64KB of the file to calculate hash
+    // This should include the GGUF header and metadata
+    const size_t buffer_size = 64 * 1024;
+    std::vector<char> buffer(buffer_size);
+    file.read(buffer.data(), buffer_size);
+    size_t read_size = file.gcount();
+
+    // Calculate hash using GGML's hash function
+    return ggml_hash_string(buffer.data(), read_size);
+}
+
+// Function to initialize model map
+static bool initialize_model_map(const std::vector<std::string>& model_paths) {
+    for (const auto& path : model_paths) {
+        std::string hash = calculate_model_hash(path);
+        if (hash.empty()) {
+            fprintf(stderr, "Failed to calculate hash for model: %s\n", path.c_str());
+            return false;
+        }
+        
+        g_model_map[hash] = {path, hash};
+        fprintf(stderr, "Registered model %s with hash %s\n", path.c_str(), hash.c_str());
+    }
+    return true;
+}
 
 static void print_usage(int /*argc*/, char ** argv, rpc_server_params params) {
     fprintf(stderr, "Usage: %s [options]\n\n", argv[0]);
@@ -38,6 +86,7 @@ static void print_usage(int /*argc*/, char ** argv, rpc_server_params params) {
     fprintf(stderr, "  -H HOST, --host HOST  host to bind to (default: %s)\n", params.host.c_str());
     fprintf(stderr, "  -p PORT, --port PORT  port to bind to (default: %d)\n", params.port);
     fprintf(stderr, "  -m MEM, --mem MEM     backend memory size (in MB)\n");
+    fprintf(stderr, "  -M PATH, --model PATH add model path (can be specified multiple times)\n");
     fprintf(stderr, "\n");
 }
 
@@ -63,6 +112,11 @@ static bool rpc_server_params_parse(int argc, char ** argv, rpc_server_params & 
                 return false;
             }
             params.backend_mem = std::stoul(argv[i]) * 1024 * 1024;
+        } else if (arg == "-M" || arg == "--model") {
+            if (++i >= argc) {
+                return false;
+            }
+            params.model_paths.push_back(argv[i]);
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argc, argv, params);
             exit(0);
@@ -138,6 +192,16 @@ int main(int argc, char * argv[]) {
     rpc_server_params params;
     if (!rpc_server_params_parse(argc, argv, params)) {
         fprintf(stderr, "Invalid parameters\n");
+        return 1;
+    }
+
+    if (params.model_paths.empty()) {
+        fprintf(stderr, "No model paths specified. Use -M or --model to specify model paths.\n");
+        return 1;
+    }
+
+    if (!initialize_model_map(params.model_paths)) {
+        fprintf(stderr, "Failed to initialize model map\n");
         return 1;
     }
 
