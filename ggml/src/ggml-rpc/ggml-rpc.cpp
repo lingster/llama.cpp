@@ -87,7 +87,23 @@ enum rpc_cmd {
     RPC_CMD_INIT_TENSOR,
     RPC_CMD_GET_ALLOC_SIZE,
     RPC_CMD_COUNT,
+    RPC_CMD_LOAD_TENSOR,
 };
+
+// Add new message structures
+#pragma pack(push, 1)
+struct rpc_msg_load_tensor_req {
+    rpc_tensor tensor;          // Tensor metadata
+    char filename[1024];        // Model filename
+    uint64_t file_offset;       // Offset in the model file
+    uint64_t tensor_size;       // Size of tensor data
+};
+
+struct rpc_msg_load_tensor_rsp {
+    uint8_t success;            // 1 if successful, 0 if failed
+    uint64_t loaded_size;       // Actual size loaded
+};
+#pragma pack(pop)
 
 struct rpc_msg_get_alloc_size_req {
     rpc_tensor tensor;
@@ -520,6 +536,79 @@ static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, con
     bool status = send_rpc_cmd(ctx->sock, RPC_CMD_COPY_TENSOR, &request, sizeof(request), &response, sizeof(response));
     GGML_ASSERT(status);
     return response.result;
+}
+
+// Add this function to handle loading tensors from file
+static bool handle_load_tensor(int fd, const rpc_msg_load_tensor_req & req) {
+    rpc_msg_load_tensor_rsp rsp = {0};
+
+    try {
+        // Open the model file
+        FILE * fin = std::fopen(req.filename, "rb");
+        if (!fin) {
+            GGML_PRINT_ERROR("Failed to open model file: %s\n", req.filename);
+            rsp.success = 0;
+            send_message(fd, &rsp, sizeof(rsp));
+            return false;
+        }
+
+        // Seek to the tensor location
+        if (fseek(fin, req.file_offset, SEEK_SET) != 0) {
+            GGML_PRINT_ERROR("Failed to seek to tensor position\n");
+            fclose(fin);
+            rsp.success = 0;
+            send_message(fd, &rsp, sizeof(rsp));
+            return false;
+        }
+
+        // Allocate memory for the tensor
+        void * tensor_data = malloc(req.tensor_size);
+        if (!tensor_data) {
+            GGML_PRINT_ERROR("Failed to allocate memory for tensor\n");
+            fclose(fin);
+            rsp.success = 0;
+            send_message(fd, &rsp, sizeof(rsp));
+            return false;
+        }
+
+        // Read the tensor data
+        size_t bytes_read = fread(tensor_data, 1, req.tensor_size, fin);
+        fclose(fin);
+
+        if (bytes_read != req.tensor_size) {
+            GGML_PRINT_ERROR("Failed to read tensor data: expected %zu bytes, got %zu\n", 
+                req.tensor_size, bytes_read);
+            free(tensor_data);
+            rsp.success = 0;
+            send_message(fd, &rsp, sizeof(rsp));
+            return false;
+        }
+
+        // Store the tensor in the backend
+        struct ggml_tensor * tensor = tensor_from_rpc(req.tensor);
+        if (!tensor) {
+            GGML_PRINT_ERROR("Failed to create tensor from RPC data\n");
+            free(tensor_data);
+            rsp.success = 0;
+            send_message(fd, &rsp, sizeof(rsp));
+            return false;
+        }
+
+        // Copy the data to the tensor
+        memcpy(tensor->data, tensor_data, req.tensor_size);
+        free(tensor_data);
+
+        rsp.success = 1;
+        rsp.loaded_size = bytes_read;
+        send_message(fd, &rsp, sizeof(rsp));
+        return true;
+
+    } catch (const std::exception & e) {
+        GGML_PRINT_ERROR("Exception while loading tensor: %s\n", e.what());
+        rsp.success = 0;
+        send_message(fd, &rsp, sizeof(rsp));
+        return false;
+    }
 }
 
 static void ggml_backend_rpc_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
@@ -1271,6 +1360,13 @@ static void rpc_serve_client(ggml_backend_t backend, sockfd_t sockfd, size_t fre
                     return;
                 }
                 break;
+            }
+                    case RPC_CMD_LOAD_TENSOR:
+            {
+                if (size != sizeof(rpc_msg_load_tensor_req)) {
+                    return false;
+                }
+                return handle_load_tensor(fd, *(const rpc_msg_load_tensor_req *)data);
             }
             case RPC_CMD_GET_TENSOR: {
                 rpc_msg_get_tensor_req request;
