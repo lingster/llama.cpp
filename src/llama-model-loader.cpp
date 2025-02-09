@@ -1049,10 +1049,18 @@ bool llama_model_loader::load_all_data(
                         buffer_idx %= n_buffers;
                     }
                 } else {
-                    read_buf.resize(n_size);
-                    file->seek(weight->offs, SEEK_SET);
-                    file->read_raw(read_buf.data(), n_size);
-                    ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);
+                    // AITODO: if --rpc-remote-load is enabled, then send RPC_CMD_LOAD_TENSOR request with the required params
+                    if (lctx.params.rpc_remote_load) {
+                        LLAMA_LOG_DEBUG("requesting remote to load from local file: %s\n", model_path.c_str());
+                        const auto & file = files.at(weight->idx);
+                        const std::string & model_path = file->get_path();
+                        ggml_backend_rpc_load_tensor(cur, model_path.c_str(), weight->offs, n_size);
+                    } else {
+                        read_buf.resize(n_size);
+                        file->seek(weight->offs, SEEK_SET);
+                        file->read_raw(read_buf.data(), n_size);
+                        ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);
+                    }
                     if (check_tensors && !ggml_validate_row_data(cur->type, read_buf.data(), n_size)) {
                         throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
                     }

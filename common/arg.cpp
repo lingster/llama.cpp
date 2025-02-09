@@ -1423,6 +1423,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 GGML_UNUSED(params);
             }
         ).set_env("LLAMA_ARG_RPC"));
+        add_opt(common_arg(
+            {"--rpc-remote-load"},
+            "load tensors from model on remote server",
+            [](common_params & params, const std::string & value) {
+                params.rpc_remote_load = true;
+            }
+        ).set_env("LLAMA_ARG_RPC_REMOTE_LOAD"));
     }
     add_opt(common_arg(
         {"--mlock"},

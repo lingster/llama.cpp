@@ -538,6 +538,26 @@ static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, con
     return response.result;
 }
 
+// Add to the client interface
+static bool ggml_backend_rpc_load_tensor( struct ggml_tensor * tensor, const char * filename, uint64_t file_offset, uint64_t tensor_size) {
+    rpc_msg_load_tensor_req req = {0};
+    tensor_to_rpc(*tensor, req.tensor);
+    strncpy(req.filename, filename, sizeof(req.filename) - 1);
+    req.file_offset = file_offset;
+    req.tensor_size = tensor_size;
+
+    if (!send_message(get_connection_fd(), &req, sizeof(req))) {
+        return false;
+    }
+
+    rpc_msg_load_tensor_rsp rsp;
+    if (!recv_message(get_connection_fd(), &rsp, sizeof(rsp))) {
+        return false;
+    }
+
+    return rsp.success == 1;
+}
+
 // Add this function to handle loading tensors from file
 static bool handle_load_tensor(int fd, const rpc_msg_load_tensor_req & req) {
     rpc_msg_load_tensor_rsp rsp = {0};
@@ -1361,7 +1381,7 @@ static void rpc_serve_client(ggml_backend_t backend, sockfd_t sockfd, size_t fre
                 }
                 break;
             }
-                    case RPC_CMD_LOAD_TENSOR:
+            case RPC_CMD_LOAD_TENSOR:
             {
                 if (size != sizeof(rpc_msg_load_tensor_req)) {
                     return false;

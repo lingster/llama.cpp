@@ -118,6 +118,7 @@ class Opt {
     int                  context_size = -1, ngl = -1;
     float                temperature = -1;
     bool                 verbose     = false;
+    bool                 rpc_remote_load = false; // if true server will attempt to load tensor from local model file
 
   private:
     int   context_size_default = -1, ngl_default = -1;
@@ -155,6 +156,8 @@ class Opt {
                 if (handle_option_with_value(argc, argv, i, context_size) == 1) {
                     return 1;
                 }
+            } else if (options_parsing && strcmp(argv[i], "--rpc-remote-load") == 0) {
+                rpc_remote_load = true;
             } else if (options_parsing &&
                        (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "-ngl") == 0 || strcmp(argv[i], "--ngl") == 0)) {
                 if (handle_option_with_value(argc, argv, i, ngl) == 1) {
