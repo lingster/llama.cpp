@@ -1050,17 +1050,18 @@ bool llama_model_loader::load_all_data(
                     }
                 } else {
                     // AITODO: if --rpc-remote-load is enabled, then send RPC_CMD_LOAD_TENSOR request with the required params
-                    if (ctx.params.rpc_remote_load) {
-                        const auto & file = files.at(weight->idx);
+                    //if (ctx->params.rpc_remote_load) {
+                    if (true){
+                        //const auto & file = files.at(weight->idx);
 
                         // TODO: work out file hash here:
                         // const std::string & model_path = file->get_path();
                         // // Calculate hash for the current model
                         // std::string model_hash = calculate_model_hash(model_path);
-                        std:: string model_hash;
+                        std:: string model_hash = "";
                         // LLAMA_LOG_DEBUG("requesting remote to load from local file: %s\n", model_path.c_str());
 
-                        const std::string & model_path; // = file->get_path();
+                        const std::string & model_path = "/data/gguf/unsloth-phi-4/phi-4-Q8_0.gguf"; // = file->get_path();
 
                         ggml_backend_rpc_load_tensor(cur, model_path.c_str(), weight->offs, n_size, model_hash.c_str());
                     } else {
