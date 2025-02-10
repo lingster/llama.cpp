@@ -86,6 +86,9 @@ extern "C" {
     GGML_API void ggml_backend_tensor_set_async(ggml_backend_t backend,       struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
     GGML_API void ggml_backend_tensor_get_async(ggml_backend_t backend, const struct ggml_tensor * tensor,       void * data, size_t offset, size_t size);
 
+    GGML_API void ggml_backend_rpc_load_tensor( struct ggml_tensor * tensor, const char * model_path, size_t offset, size_t size, const char * model_hash);
+
+
     // "offset" refers to the offset in tensor->data for setting/getting data
     GGML_API void ggml_backend_tensor_set(      struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
     GGML_API void ggml_backend_tensor_get(const struct ggml_tensor * tensor,       void * data, size_t offset, size_t size);
