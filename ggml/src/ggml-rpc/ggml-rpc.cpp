@@ -94,7 +94,7 @@ enum rpc_cmd {
 #pragma pack(push, 1)
 struct rpc_msg_load_tensor_req {
     rpc_tensor tensor;          // Tensor metadata
-    char filename[1024];        // Model filename
+    char model_path[1024];        // Model filename
     char model_hash[1024];      // Model has
     uint64_t file_offset;       // Offset in the model file
     uint64_t tensor_size;       // Size of tensor data
@@ -540,10 +540,10 @@ static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, con
 }
 
 // Add to the client interface
-static bool ggml_backend_rpc_load_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const char * filename, uint64_t file_offset, uint64_t tensor_size, const char * model_hash) {
+static bool ggml_backend_rpc_load_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const char * model_path, uint64_t file_offset, uint64_t tensor_size, const char * model_hash) {
     rpc_msg_load_tensor_req req;
     req.tensor = serialize_tensor(tensor);
-    strncpy(req.filename, filename, sizeof(req.filename) - 1);
+    strncpy(req.model_path, model_path, sizeof(req.model_path) - 1);
     strncpy(req.model_hash, model_hash, sizeof(req.model_hash) - 1);
     req.file_offset = file_offset;
     req.tensor_size = tensor_size;
@@ -556,91 +556,6 @@ static bool ggml_backend_rpc_load_tensor(ggml_backend_buffer_t buffer, struct gg
     return response.result;
 }
 
-// Add this function to handle loading tensors from file
-static bool handle_load_tensor(int fd, const rpc_msg_load_tensor_req & req) {
-    rpc_msg_load_tensor_rsp rsp;
-
-    try {
-        auto it = g_model_map.find(req.model_hash);
-        if( it == g_model_map.end()){
-            GGML_LOG_ERROR("Model hash not found: %s\n", req.model_hash);
-            return false;
-        }
-
-        // Verify that the requested model path matches our registered path
-        if (it->second.path != model_path) {
-            fprintf(stderr, "Model path mismatch. Expected: %s, Got: %s\n", 
-                    it->second.path.c_str(), model_path.c_str());
-            return false;
-        }
-
-        // Open the model file
-        FILE * fin = std::fopen(req.filename, "rb");
-        if (!fin) {
-            GGML_LOG_ERROR("Failed to open model file: %s\n", req.filename);
-            rsp.success = 0;
-            send_message(fd, &rsp, sizeof(rsp));
-            return false;
-        }
-
-        // Seek to the tensor location
-        if (fseek(fin, req.file_offset, SEEK_SET) != 0) {
-            GGML_LOG_ERROR("Failed to seek to tensor position\n");
-            fclose(fin);
-            rsp.success = 0;
-            send_message(fd, &rsp, sizeof(rsp));
-            return false;
-        }
-
-        // Allocate memory for the tensor
-        void * tensor_data = malloc(req.tensor_size);
-        if (!tensor_data) {
-            GGML_LOG_ERROR("Failed to allocate memory for tensor\n");
-            fclose(fin);
-            rsp.success = 0;
-            send_message(fd, &rsp, sizeof(rsp));
-            return false;
-        }
-
-        // Read the tensor data
-        size_t bytes_read = fread(tensor_data, 1, req.tensor_size, fin);
-        fclose(fin);
-
-        if (bytes_read != req.tensor_size) {
-            GGML_LOG_ERROR("Failed to read tensor data: expected %zu bytes, got %zu\n",
-                req.tensor_size, bytes_read);
-            free(tensor_data);
-            rsp.success = 0;
-            send_message(fd, &rsp, sizeof(rsp));
-            return false;
-        }
-
-        // Store the tensor in the backend
-        struct ggml_tensor * tensor = tensor_from_rpc(req.tensor);
-        if (!tensor) {
-            GGML_LOG_ERROR("Failed to create tensor from RPC data\n");
-            free(tensor_data);
-            rsp.success = 0;
-            send_message(fd, &rsp, sizeof(rsp));
-            return false;
-        }
-
-        // Copy the data to the tensor
-        memcpy(tensor->data, tensor_data, req.tensor_size);
-        free(tensor_data);
-
-        rsp.success = 1;
-        rsp.loaded_size = bytes_read;
-        send_message(fd, &rsp, sizeof(rsp));
-        return true;
-
-    } catch (const std::exception & e) {
-        GGML_LOG_ERROR("Exception while loading tensor: %s\n", e.what());
-        rsp.success = 0;
-        send_message(fd, &rsp, sizeof(rsp));
-        return false;
-    }
-}
 
 static void ggml_backend_rpc_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
@@ -901,6 +816,7 @@ public:
     bool free_buffer(const rpc_msg_free_buffer_req & request);
     bool buffer_clear(const rpc_msg_buffer_clear_req & request);
     bool set_tensor(const std::vector<uint8_t> & input);
+    bool load_tensor(const rpc_msg_load_tensor_req & request, rpc_msg_load_tensor_rsp & response);
     bool get_tensor(const rpc_msg_get_tensor_req & request, std::vector<uint8_t> & response);
     bool copy_tensor(const rpc_msg_copy_tensor_req & request, rpc_msg_copy_tensor_rsp & response);
     bool graph_compute(const std::vector<uint8_t> & input, rpc_msg_graph_compute_rsp & response);
@@ -1150,6 +1066,99 @@ bool rpc_server::get_tensor(const rpc_msg_get_tensor_req & request, std::vector<
     ggml_free(ctx);
     return true;
 }
+// Add this function to handle loading tensors from file
+bool rpc_server::load_tensor(const rpc_msg_load_tensor_req & req, rpc_msg_load_tensor_rsp & rsp) {
+    rsp.success = 0;
+
+    // TODO: do I need this context below?
+    struct ggml_init_params params {
+        /*.mem_size   =*/ ggml_tensor_overhead(),
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+    struct ggml_context * ctx = ggml_init(params);
+
+    try {
+        auto it = g_model_map.find(req.model_hash);
+        if( it == g_model_map.end()){
+            GGML_LOG_ERROR("Model hash not found: %s\n", req.model_hash);
+            ggml_free(ctx);
+            return false;
+        }
+
+        // TODO: if the model path starts with `hf:`  then we should try to use hf and download the model and
+        // use it via the huggingface cache
+
+
+        // Verify that the requested model path matches our registered path
+        if (it->second.path != req.model_path) {
+            fprintf(stderr, "Model path mismatch. Expected: %s, Got: %s\n",
+                    it->second.path.c_str(), req.model_path);
+            return false;
+        }
+
+        // Open the model file
+        FILE * fin = std::fopen(req.model_path, "rb");
+        if (!fin) {
+            GGML_LOG_ERROR("Failed to open model file: %s\n", req.model_path);
+            ggml_free(ctx);
+            return false;
+        }
+
+        // Seek to the tensor location
+        if (fseek(fin, req.file_offset, SEEK_SET) != 0) {
+            GGML_LOG_ERROR("Failed to seek to tensor position\n");
+            fclose(fin);
+            ggml_free(ctx);
+            return false;
+        }
+
+        // Allocate memory for the tensor
+        void * tensor_data = malloc(req.tensor_size);
+        if (!tensor_data) {
+            GGML_LOG_ERROR("Failed to allocate memory for tensor\n");
+            fclose(fin);
+            ggml_free(ctx);
+            return false;
+        }
+
+        // Read the tensor data
+        size_t bytes_read = fread(tensor_data, 1, req.tensor_size, fin);
+        fclose(fin);
+
+        if (bytes_read != req.tensor_size) {
+            GGML_LOG_ERROR("Failed to read tensor data: expected %zu bytes, got %zu\n", req.tensor_size, bytes_read);
+            free(tensor_data);
+            ggml_free(ctx);
+            return false;
+        }
+
+        // Store the tensor in the backend
+        // TODO: load the tensor from the model file
+        //struct ggml_tensor * tensor = tensor_from_rpc(req.tensor);
+        ggml_tensor * cur = deserialize_tensor(ctx, &req.tensor);
+        ggml_backend_tensor_set(cur, tensor_data, 0, req.tensor_size);
+
+//        if (!tensor) {
+//            GGML_LOG_ERROR("Failed to create tensor from RPC data\n");
+//            free(tensor_data);
+//            return false;
+//        }
+//
+        // Copy the data to the tensor
+        //memcpy(tensor->data, tensor_data, req.tensor_size);
+        free(tensor_data);
+
+        rsp.success = 1;
+        rsp.loaded_size = bytes_read;
+        ggml_free(ctx);
+        return true;
+
+    } catch (const std::exception & e) {
+        GGML_LOG_ERROR("Exception while loading tensor: %s\n", e.what());
+        return false;
+    }
+}
 
 bool rpc_server::copy_tensor(const rpc_msg_copy_tensor_req & request, rpc_msg_copy_tensor_rsp & response) {
     struct ggml_init_params params {
@@ -1394,10 +1403,15 @@ static void rpc_serve_client(ggml_backend_t backend, sockfd_t sockfd, size_t fre
             }
             case RPC_CMD_LOAD_TENSOR:
             {
-                if (size != sizeof(rpc_msg_load_tensor_req)) {
-                    return false;
+                rpc_msg_load_tensor_req request;
+                if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    return;
                 }
-                return handle_load_tensor(fd, *(const rpc_msg_load_tensor_req *)data);
+                rpc_msg_load_tensor_rsp response;
+                if (!server.load_tensor(request, response)) {
+                    return;
+                }
+                break;
             }
             case RPC_CMD_GET_TENSOR: {
                 rpc_msg_get_tensor_req request;

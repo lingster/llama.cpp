@@ -251,6 +251,63 @@ void ggml_backend_tensor_get_async(ggml_backend_t backend, const struct ggml_ten
     }
 }
 
+ static ggml_backend_t get_rpc_backend_from_tensor(struct ggml_tensor * tensor) {
+     // ... (Implementation to get the RPC backend from the tensor's buffer or context) ...
+     // This is a placeholder - you'll need to adapt this based on your backend design.
+     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+     if (!buf) return nullptr;
+     ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(buf);
+     if (!buft) return nullptr;
+     ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
+     if (!dev) return nullptr;
+     return ggml_backend_dev_init(dev, nullptr); // Assuming device init gives backend. Adjust as needed.
+ }
+
+ void ggml_backend_rpc_load_tensor(
+     struct ggml_tensor * tensor,
+     const char * model_path,
+     size_t offset,
+     size_t size,
+     const char * model_hash) {
+
+     ggml_backend_t backend = get_rpc_backend_from_tensor(tensor);
+     if (!backend) {
+         GGML_LOG_ERROR("%s: could not get RPC backend for tensor '%s'\n", __func__, tensor->name);
+         return; // Or handle error appropriately
+     }
+
+     // 1. Construct the RPC message payload (data to be sent)
+     struct rpc_load_tensor_request request;
+     request.cmd        = RPC_CMD_LOAD_TENSOR;
+     strncpy(request.tensor_name, tensor->name, sizeof(request.tensor_name) - 1); // Safe string copy
+     request.tensor_name[sizeof(request.tensor_name) - 1] = '\0'; // Ensure null termination
+     strncpy(request.model_path, model_path, sizeof(request.model_path) - 1);     // Safe string copy
+     request.model_path[sizeof(request.model_path) - 1] = '\0';                  // Ensure null termination
+     request.offset     = offset;
+     request.size       = size;
+     if (model_hash) {
+         strncpy(request.model_hash, model_hash, sizeof(request.model_hash) - 1); // Safe string copy
+         request.model_hash[sizeof(request.model_hash) - 1] = '\0';              // Ensure null termination
+     } else {
+         request.model_hash[0] = '\0'; // Empty hash if not provided
+     }
+
+
+     // 2. Send the RPC message using the backend's interface
+     // Assuming 'backend->iface.send_message' is the function to send RPC messages
+     // and it takes a pointer to the message data and its size.
+     if (backend->iface.send_message) {
+         backend->iface.send_message(backend, &request, sizeof(request));
+     } else {
+         GGML_LOG_ERROR("%s: RPC backend '%s' does not support sending messages\n", __func__, ggml_backend_name(backend));
+         // Handle error - maybe throw an exception or return an error code
+     }
+
+     // Note: In a real RPC system, you would likely handle responses and errors.
+     // This example is simplified to just sending the request.
+ }
+
+
 void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;

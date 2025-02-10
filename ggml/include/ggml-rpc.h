@@ -3,6 +3,9 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#include <string>
+#include <unordered_map>
+
 #ifdef  __cplusplus
 extern "C" {
 #endif
@@ -22,6 +25,15 @@ GGML_BACKEND_API void ggml_backend_rpc_start_server(ggml_backend_t backend, cons
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_rpc_reg(void);
 
 GGML_BACKEND_API ggml_backend_dev_t ggml_backend_rpc_add_device(const char * endpoint);
+
+
+// Structure to hold model information
+struct model_info {
+    std::string path;
+    std::string hash;
+};
+
+extern std::unordered_map<std::string, model_info> g_model_map;
 
 #ifdef  __cplusplus
 }

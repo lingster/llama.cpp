@@ -36,14 +36,8 @@ struct rpc_server_params {
     std::vector<std::string> model_paths;
 };
 
-// Structure to hold model information
-struct model_info {
-    std::string path;
-    std::string hash;
-};
-
 // Global map to store model paths and their hashes
-static std::unordered_map<std::string, model_info> g_model_map;
+std::unordered_map<std::string, model_info> g_model_map;
 
 // Function to calculate hash of a GGUF file
 static std::string calculate_model_hash(const std::string& model_path) {
