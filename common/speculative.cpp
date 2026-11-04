@@ -2437,7 +2437,99 @@ struct common_speculative {
     std::vector<common_speculative_impl *> impl_last;
 
     std::vector<double> synth_probs;
+
+    common_params_speculative_lookup lookup;
+
+    struct lookup_state {
+        int32_t n_head = 0;     // model draft block size of the last fused draft (0: not fused)
+        bool    sat    = false; // the last step accepted the whole model draft block
+        bool    want   = false; // the last step had a tail to offer after a saturated step
+        int32_t n_hold = 0;     // steps left to keep the tail after the trigger drops
+    };
+
+    std::vector<lookup_state> lookup_states;
+
+    llama_tokens lookup_buf;
+
+    size_t n_lookup_drafts   = 0; // drafts that went through the lookup
+    size_t n_lookup_replaced = 0; // model draft tokens replaced by the lookup
+    size_t n_lookup_appended = 0; // lookup tokens appended after the model draft
 };
+
+// a copy that runs keeps the tail this many steps after the trigger drops, since re-entry costs two steps
+static constexpr int32_t COMMON_SPECULATIVE_LOOKUP_HOLD = 3;
+
+static bool common_speculative_type_is_ngram(common_speculative_type type) {
+    switch (type) {
+        case COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE:
+        case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K:
+        case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V:
+        case COMMON_SPECULATIVE_TYPE_NGRAM_MOD:
+        case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// fuse a context lookup into the drafts that a draft model produced in this round
+static void common_speculative_lookup_fuse(
+        common_speculative * spec,
+        const std::vector<common_speculative_impl *> & impl_cur) {
+    for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) spec->dparams.size(); ++seq_id) {
+        auto & st = spec->lookup_states[seq_id];
+
+        const common_speculative_impl * impl = impl_cur[seq_id];
+        if (impl == nullptr) {
+            continue;
+        }
+
+        if (common_speculative_type_is_ngram(impl->type)) {
+            continue;
+        }
+
+        auto & dp    = spec->dparams[seq_id];
+        auto & draft = *dp.result;
+        auto & buf   = spec->lookup_buf;
+
+        const int32_t n_match = common_ngram_lookup_find(spec->lookup, *dp.prompt, dp.id_last, buf);
+        if (dp.n_max > 0 && (int32_t) buf.size() > dp.n_max) {
+            buf.resize(dp.n_max);
+        }
+
+        st.n_head = impl->n_max;
+
+        const auto res = common_ngram_lookup_fuse(spec->lookup, buf, n_match, draft, dp.result_q);
+
+        // the tail costs verify time whether or not it is accepted, so it is taken only while a copy runs:
+        // the lookup has a tail after a saturated step, two steps in a row
+        const bool want = res.has_tail && st.sat;
+
+        bool use_tail = false;
+        if (want && st.want) {
+            use_tail  = true;
+            st.n_hold = COMMON_SPECULATIVE_LOOKUP_HOLD;
+        } else if (st.n_hold > 0) {
+            use_tail = true;
+            st.n_hold--;
+        }
+        st.want = want;
+
+        int32_t n_appended = 0;
+        if (use_tail && res.has_tail) {
+            n_appended = common_ngram_lookup_extend(buf, draft, dp.result_q);
+        }
+
+        if (n_match > 0) {
+            SPC_DBG("seq_id %d: lookup match = %d, replaced = %d, appended = %d, draft = %zu\n",
+                    seq_id, n_match, res.n_replaced, n_appended, draft.size());
+            spec->n_lookup_drafts++;
+        }
+
+        spec->n_lookup_replaced += res.n_replaced;
+        spec->n_lookup_appended += n_appended;
+    }
+}
 
 static common_ngram_map get_common_ngram_map(
         common_speculative_type type,
@@ -2604,6 +2696,10 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
         }
     }
 
+    if (spec->lookup.enabled && n_max > 0) {
+        n_max = std::max(n_max, spec->lookup.n_draft);
+    }
+
     return n_max;
 }
 
@@ -2616,6 +2712,10 @@ int32_t common_speculative_n_max(const common_speculative * spec) {
 
     for (const auto & impl : spec->impls) {
         n_max = std::max(n_max, std::max(0, impl->n_max));
+    }
+
+    if (spec->lookup.enabled && n_max > 0) {
+        n_max = std::max(n_max, spec->lookup.n_draft);
     }
 
     return n_max;
@@ -2969,11 +3069,27 @@ common_speculative * common_speculative_init(common_params_speculative & params,
     }
 
     common_speculative_ptr result(new common_speculative {
-        /* .dparams     = */ common_speculative_draft_params_vec(n_seq),
-        /* .impls       = */ std::move(impls),
-        /* .impl_last   = */ std::vector<common_speculative_impl *>(n_seq, nullptr),
-        /* .synth_probs = */ {},
+        /* .dparams           = */ common_speculative_draft_params_vec(n_seq),
+        /* .impls             = */ std::move(impls),
+        /* .impl_last         = */ std::vector<common_speculative_impl *>(n_seq, nullptr),
+        /* .synth_probs       = */ {},
+        /* .lookup            = */ params.lookup,
+        /* .lookup_states     = */ std::vector<common_speculative::lookup_state>(n_seq),
+        /* .lookup_buf        = */ {},
+        /* .n_lookup_drafts   = */ 0,
+        /* .n_lookup_replaced = */ 0,
+        /* .n_lookup_appended = */ 0,
     });
+
+    if (params.lookup.enabled) {
+        const bool has_model = std::any_of(result->impls.begin(), result->impls.end(),
+                [](const auto & impl) { return !common_speculative_type_is_ngram(impl->type); });
+        if (!has_model) {
+            SPC_WRN("%s", "context lookup is fused only into draft model drafts, but no draft model type is enabled\n");
+        }
+        SPC_INF("context lookup: n_min = %d, n_max = %d, n_strong = %d, n_agree = %d, n_draft = %d\n",
+                params.lookup.n_min, params.lookup.n_max, params.lookup.n_strong, params.lookup.n_agree, params.lookup.n_draft);
+    }
 
     const int32_t n_max_configured = common_speculative_n_max(&params);
     const int32_t n_max_effective  = common_speculative_n_max(result.get());
@@ -3025,6 +3141,10 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
         return;
     }
 
+    if (seq_id >= 0 && seq_id < (llama_seq_id) spec->lookup_states.size()) {
+        spec->lookup_states[seq_id] = {};
+    }
+
     for (auto & impl : spec->impls) {
         common_time_meas tm(impl->t_begin_us, !impl->gen_perf);
         impl->begin(seq_id, prompt);
@@ -3056,10 +3176,13 @@ void common_speculative_draft(common_speculative * spec) {
     {
         int n_drafting = 0;
 
-        for (auto & dp : dparams) {
+        for (size_t i = 0; i < dparams.size(); ++i) {
+            auto & dp = dparams[i];
+
             GGML_ASSERT(!dp.drafting || dp.result->empty());
 
             if (dp.drafting) {
+                spec->lookup_states[i].n_head = 0;
                 n_drafting++;
             }
         }
@@ -3068,6 +3191,9 @@ void common_speculative_draft(common_speculative * spec) {
             return;
         }
     }
+
+    // the implementation that produced the draft of each sequence in this call
+    std::vector<common_speculative_impl *> impl_cur(dparams.size(), nullptr);
 
     for (auto & impl : spec->impls) {
         {
@@ -3110,6 +3236,7 @@ void common_speculative_draft(common_speculative * spec) {
 
                     // remember which implementation was used
                     spec->impl_last[seq_id] = impl.get();
+                    impl_cur[seq_id] = impl.get();
 
                     impl->n_gen_drafts++;
                     impl->n_gen_tokens += result.size();
@@ -3126,6 +3253,10 @@ void common_speculative_draft(common_speculative * spec) {
         }
     }
 
+    if (spec->lookup.enabled) {
+        common_speculative_lookup_fuse(spec, impl_cur);
+    }
+
     // these sequences failed to generate a draft
     for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) dparams.size(); ++seq_id) {
         auto & dp = dparams[seq_id];
@@ -3138,6 +3269,11 @@ void common_speculative_draft(common_speculative * spec) {
 
 void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, uint16_t n_accepted) {
     common_speculative_impl * impl = spec->impl_last[seq_id];
+
+    {
+        auto & st = spec->lookup_states[seq_id];
+        st.sat = st.n_head > 0 && n_accepted >= st.n_head;
+    }
 
     if (impl == nullptr) {
         GGML_ASSERT(n_accepted == 0);
@@ -3240,5 +3376,10 @@ void common_speculative_print_stats(const common_speculative * spec) {
                 impl->n_acc_tokens,
                 str_stats.c_str(),
                 str_perf.c_str());
+    }
+
+    if (spec->lookup.enabled) {
+        SPC_TRC("statistics %16s: #drafts = %6zu, #replaced tokens = %6zu, #appended tokens = %6zu\n",
+                "lookup", spec->n_lookup_drafts, spec->n_lookup_replaced, spec->n_lookup_appended);
     }
 }

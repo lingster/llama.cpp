@@ -32,6 +32,35 @@ llama_tokens common_ngram_simple_draft(
         const llama_tokens & tokens, llama_token sampled);
 
 
+// n-gram lookup, fused into the draft of a draft model
+//
+
+// Finds the most recent earlier occurrence of the longest suffix (n_min..n_max tokens) of tokens + sampled.
+// The match may overlap the suffix, so a repeated pattern matches at its own period.
+// Writes up to n_draft tokens that followed the match to `out` and returns the match length (0: no match).
+int32_t common_ngram_lookup_find(
+        const common_params_speculative_lookup & params,
+        const llama_tokens & tokens, llama_token sampled, llama_tokens & out);
+
+struct common_ngram_lookup_fuse_result {
+    int32_t n_replaced = 0;     // model draft tokens replaced by lookup tokens
+    bool    has_tail   = false; // the lookup has tokens to append after the model draft
+};
+
+// Replaces the head of the model draft with the lookup if the match is strong or agrees with the draft.
+// Replaced positions get a point mass in draft_q (if not empty), so rejection sampling stays exact.
+common_ngram_lookup_fuse_result common_ngram_lookup_fuse(
+        const common_params_speculative_lookup & params,
+        const llama_tokens & lookup, int32_t n_match,
+        llama_tokens & draft, std::vector<std::vector<llama_token_data>> * draft_q);
+
+// Appends the lookup tokens past the end of the draft, with a point mass in draft_q (if not empty).
+// Returns the number of appended tokens.
+int32_t common_ngram_lookup_extend(
+        const llama_tokens & lookup,
+        llama_tokens & draft, std::vector<std::vector<llama_token_data>> * draft_q);
+
+
 // n-gram map
 //
 

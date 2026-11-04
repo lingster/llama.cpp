@@ -376,6 +376,16 @@ struct common_params_speculative_ngram_cache {
     std::string lookup_cache_dynamic; // path of dynamic ngram cache file for lookup decoding
 };
 
+// look up the current suffix in the context and fuse the tokens that followed it into the draft model's draft
+struct common_params_speculative_lookup {
+    bool    enabled  = false;
+    int32_t n_min    = 6;  // shortest suffix that can match
+    int32_t n_max    = 12; // longest suffix to match; the longest match wins, then the most recent
+    int32_t n_strong = 6;  // match length that replaces the model draft on its own
+    int32_t n_agree  = 0;  // a shorter match needs this many leading tokens to agree with the model draft
+    int32_t n_draft  = 16; // max draft length, including lookup tokens appended after the model draft
+};
+
 struct common_params_speculative {
     std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
 
@@ -391,6 +401,8 @@ struct common_params_speculative {
     common_params_speculative_ngram_map ngram_map_k4v;
 
     common_params_speculative_ngram_cache ngram_cache;
+
+    common_params_speculative_lookup lookup;
 
     bool has_dft() const {
         return !draft.mparams.empty();

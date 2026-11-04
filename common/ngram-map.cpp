@@ -2,6 +2,7 @@
 #include "log.h"
 #include "ngram-map.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -109,6 +110,123 @@ llama_tokens common_ngram_simple_draft(
         draft_tokens.push_back(tokens[match_pos + n_draft_min + j]);
     }
     return draft_tokens;
+}
+
+
+// n-gram lookup
+//
+
+int32_t common_ngram_lookup_find(
+        const common_params_speculative_lookup & params,
+        const llama_tokens & tokens, llama_token sampled, llama_tokens & out) {
+    out.clear();
+
+    // the history is tokens + sampled, the suffix ends at `end`
+    const int64_t end = (int64_t) tokens.size();
+    auto tok = [&](int64_t i) { return i < end ? tokens[i] : sampled; };
+
+    if (params.n_min < 1 || params.n_draft < 1 || end < params.n_min + 1) {
+        return 0;
+    }
+
+    int32_t best_len = 0;
+    int64_t best_e   = -1;
+
+    // most recent first: an older match must be strictly longer to win
+    for (int64_t e = end - 1; e >= params.n_min - 1; --e) {
+        if (tokens[e] != sampled) {
+            continue;
+        }
+
+        int32_t len = 1;
+        while (len < params.n_max && e - len >= 0 && tokens[e - len] == tokens[end - len]) {
+            len++;
+        }
+
+        if (len >= params.n_min && len > best_len) {
+            best_len = len;
+            best_e   = e;
+            if (len >= params.n_max) {
+                break;
+            }
+        }
+    }
+
+    if (best_len == 0) {
+        return 0;
+    }
+
+    const int64_t n_follow = std::min<int64_t>(params.n_draft, end - best_e);
+    for (int64_t i = 1; i <= n_follow; ++i) {
+        out.push_back(tok(best_e + i));
+    }
+
+    return best_len;
+}
+
+common_ngram_lookup_fuse_result common_ngram_lookup_fuse(
+        const common_params_speculative_lookup & params,
+        const llama_tokens & lookup, int32_t n_match,
+        llama_tokens & draft, std::vector<std::vector<llama_token_data>> * draft_q) {
+    common_ngram_lookup_fuse_result res;
+
+    const int32_t n_dft = (int32_t) draft.size();
+    const int32_t n_lkp = (int32_t) lookup.size();
+
+    if (n_match <= 0 || n_dft == 0 || n_lkp == 0) {
+        return res;
+    }
+
+    const int32_t n_common = std::min(n_dft, n_lkp);
+
+    int32_t n_agree = 0;
+    while (n_agree < n_common && draft[n_agree] == lookup[n_agree]) {
+        n_agree++;
+    }
+
+    // two sources that agree are a cheap confidence signal: the model saw the hidden state, the lookup saw the text
+    const bool take_head = n_match >= params.n_strong || (n_match >= params.n_min && n_agree >= params.n_agree);
+
+    // the tail must continue the head: the lookup owns the head, or the model draft agrees with all of it
+    res.has_tail = (take_head || n_agree == n_dft) && n_lkp > n_dft;
+
+    if (!take_head) {
+        return res;
+    }
+
+    const bool has_q = draft_q && !draft_q->empty();
+    GGML_ASSERT(!has_q || draft_q->size() == draft.size());
+
+    for (int32_t i = n_agree; i < n_common; ++i) {
+        if (draft[i] == lookup[i]) {
+            continue;
+        }
+        draft[i] = lookup[i];
+        if (has_q) {
+            (*draft_q)[i] = { { lookup[i], 0.0f, 1.0f } };
+        }
+        res.n_replaced++;
+    }
+
+    return res;
+}
+
+int32_t common_ngram_lookup_extend(
+        const llama_tokens & lookup,
+        llama_tokens & draft, std::vector<std::vector<llama_token_data>> * draft_q) {
+    const bool has_q = draft_q && !draft_q->empty();
+    GGML_ASSERT(!has_q || draft_q->size() == draft.size());
+
+    int32_t n_added = 0;
+    for (size_t i = draft.size(); i < lookup.size(); ++i) {
+        draft.push_back(lookup[i]);
+        if (has_q) {
+            draft_q->push_back({ { lookup[i], 0.0f, 1.0f } });
+        }
+        n_added++;
+    }
+
+    return n_added;
 }
 
 

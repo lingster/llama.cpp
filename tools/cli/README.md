@@ -223,6 +223,12 @@
 | `--spec-ngram-map-k4v-size-n N` | ngram size N for ngram-map-k4v speculative decoding, length of lookup n-gram (default: 12) |
 | `--spec-ngram-map-k4v-size-m N` | ngram size M for ngram-map-k4v speculative decoding, length of draft m-gram (default: 48) |
 | `--spec-ngram-map-k4v-min-hits N` | minimum hits for ngram-map-k4v speculative decoding (default: 1) |
+| `--spec-lookup, --no-spec-lookup` | fuse a lookup of the current suffix in the context into the drafts of a draft model (default: disabled)<br/>(env: LLAMA_ARG_SPEC_LOOKUP) |
+| `--spec-lookup-n-min N` | shortest suffix that the context lookup can match (default: 6) |
+| `--spec-lookup-n-max N` | longest suffix that the context lookup matches; the longest match wins, then the most recent (default: 12) |
+| `--spec-lookup-n-strong N` | lookup match length that replaces the draft model's tokens on its own (default: 6) |
+| `--spec-lookup-n-agree N` | leading tokens that a shorter lookup match must share with the draft model's draft to replace it (default: 0) |
+| `--spec-lookup-n-draft N` | max draft length with the context lookup, including lookup tokens appended after the draft model's draft (default: 16) |
 | `--draft, --draft-n, --draft-max N` | the argument has been removed. use --spec-draft-n-max or --spec-ngram-mod-n-max<br/>(env: LLAMA_ARG_DRAFT_MAX) |
 | `--draft-min, --draft-n-min N` | the argument has been removed. use --spec-draft-n-min or --spec-ngram-mod-n-min<br/>(env: LLAMA_ARG_DRAFT_MIN) |
 | `--gpt-oss-20b-default` | use gpt-oss-20b (note: can download weights from the internet) |

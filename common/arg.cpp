@@ -4399,6 +4399,66 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 
+    add_opt(common_arg(
+        {"--spec-lookup"},
+        {"--no-spec-lookup"},
+        string_format("fuse a lookup of the current suffix in the context into the drafts of a draft model (default: %s)",
+                      params.speculative.lookup.enabled ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.speculative.lookup.enabled = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_LOOKUP"));
+    add_opt(common_arg(
+        {"--spec-lookup-n-min"}, "N",
+        string_format("shortest suffix that the context lookup can match (default: %d)", params.speculative.lookup.n_min),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 1024) {
+                throw std::invalid_argument("lookup n-min must be between 1 and 1024 inclusive");
+            }
+            params.speculative.lookup.n_min = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-lookup-n-max"}, "N",
+        string_format("longest suffix that the context lookup matches; the longest match wins, then the most recent (default: %d)", params.speculative.lookup.n_max),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 1024) {
+                throw std::invalid_argument("lookup n-max must be between 1 and 1024 inclusive");
+            }
+            params.speculative.lookup.n_max = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-lookup-n-strong"}, "N",
+        string_format("lookup match length that replaces the draft model's tokens on its own (default: %d)", params.speculative.lookup.n_strong),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 1024) {
+                throw std::invalid_argument("lookup n-strong must be between 1 and 1024 inclusive");
+            }
+            params.speculative.lookup.n_strong = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-lookup-n-agree"}, "N",
+        string_format("leading tokens that a shorter lookup match must share with the draft model's draft to replace it (default: %d)", params.speculative.lookup.n_agree),
+        [](common_params & params, int value) {
+            if (value < 0 || value > 1024) {
+                throw std::invalid_argument("lookup n-agree must be between 0 and 1024 inclusive");
+            }
+            params.speculative.lookup.n_agree = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-lookup-n-draft"}, "N",
+        string_format("max draft length with the context lookup, including lookup tokens appended after the draft model's draft (default: %d)", params.speculative.lookup.n_draft),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 1024) {
+                throw std::invalid_argument("lookup n-draft must be between 1 and 1024 inclusive");
+            }
+            params.speculative.lookup.n_draft = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
     //
     // removed params
     //

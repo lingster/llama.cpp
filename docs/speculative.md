@@ -203,6 +203,23 @@ Example Video:
 - ngram-map-k looks for a previous matching n-gram and inserts the following m-gram but uses an internal hash-map of n-grams in the current context window.
 - ngram-mod uses a hash pool which is shared across all server slots. The hash pool is a map from n-gram hash to the next token (not the next m-gram as in ngram-map).
 
+### Context Lookup (`--spec-lookup`)
+
+This is not a separate type. It is fused into the drafts of a draft model (`draft-simple`, `draft-eagle3`, `draft-mtp`, `draft-dflash`, `draft-dspark`).
+
+A draft model often sees only part of the context, or guesses at text that the answer copies from the prompt (quotes, code edits, RAG answers). The lookup finds the most recent earlier occurrence of the longest suffix (`--spec-lookup-n-min` to `--spec-lookup-n-max` tokens) of the token history and takes the tokens that followed it:
+
+- A match of at least `--spec-lookup-n-strong` tokens replaces the model draft. A shorter match replaces it only if the model draft agrees with its first `--spec-lookup-n-agree` tokens.
+- A match can overlap the suffix, so a repeated pattern (a list marker, an indent) matches at its own period.
+- The lookup can append tokens after the end of the model draft, up to `--spec-lookup-n-draft` tokens in total. Each extra token costs verify time, so this happens only while a copy runs: the target accepted the whole model draft block in two consecutive steps and the lookup has more tokens to offer. Then the long draft is kept for 3 more steps.
+- With probabilistic drafting (`--spec-draft-sampling probabilistic`), the positions from the lookup get a point mass as draft distribution, so rejection sampling stays exact.
+
+```
+llama-server [...] -md draft.gguf --spec-type draft-dflash --spec-lookup --spec-lookup-n-draft 32
+```
+
+The method is a port of the lookup-augmented drafting of [HyperQwen](https://github.com/syv-ai/HyperQwen).
+
 ## Command-Line Options
 
 If a draft model is combined with a draftless decoding the draftless decoding has higher precedence.
@@ -357,6 +374,23 @@ Use exactly one of these options:
                                         ngram size M for ngram-map-k4v speculative decoding, length of draft m-gram (default: 48)
 --spec-ngram-map-k4v-min-hits           N
                                         minimum hits for ngram-map-k4v speculative decoding (default: 1)
+```
+
+### Context Lookup Parameters
+
+```
+--spec-lookup, --no-spec-lookup         fuse a lookup of the current suffix in the context into the drafts of a draft model (default: disabled)
+                                        (env: LLAMA_ARG_SPEC_LOOKUP)
+--spec-lookup-n-min                     N
+                                        shortest suffix that the context lookup can match (default: 6)
+--spec-lookup-n-max                     N
+                                        longest suffix that the context lookup matches; the longest match wins, then the most recent (default: 12)
+--spec-lookup-n-strong                  N
+                                        lookup match length that replaces the draft model's tokens on its own (default: 6)
+--spec-lookup-n-agree                   N
+                                        leading tokens that a shorter lookup match must share with the draft model's draft to replace it (default: 0)
+--spec-lookup-n-draft                   N
+                                        max draft length with the context lookup, including lookup tokens appended after the draft model's draft (default: 16)
 ```
 
 ### `--spec-type TYPE`
